@@ -1,0 +1,42 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Acomodar icono CERES
+        run: |
+          set -e
+          mkdir -p app/src/main/res/drawable
+          if [ ! -f app/src/main/res/drawable/ceres_icon.png ]; then
+            SRC=$(find . -path ./.git -prune -o -type f -iname '*.png' -print | head -n 1)
+            if [ -z "$SRC" ]; then echo "ERROR: no encontre ningun PNG"; exit 1; fi
+            echo "Copiando icono desde: $SRC"
+            cp "$SRC" app/src/main/res/drawable/ceres_icon.png
+          fi
+          find app/src/main/res/drawable -maxdepth 1 -type f -iname '*.png' ! -name 'ceres_icon.png' -delete
+          ls -la app/src/main/res/drawable
+
+      - name: Compilar APK
+        run: gradle assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ceres-apk
+          path: app/build/outputs/apk/debug/*.apk
