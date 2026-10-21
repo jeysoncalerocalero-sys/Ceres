@@ -7,22 +7,16 @@ import java.io.File
 object Patcher {
 
     private val ROOT = Environment.getExternalStorageDirectory()
-
     private val PACKAGES = listOf("com.dts.freefireth", "com.dts.freefiremax")
 
     fun dataDir(pkg: String) = File(ROOT, "Android/data/$pkg")
-    fun filesDir(pkg: String) = File(dataDir(pkg), "files")
-
-    fun configDir(pkg: String) = File(
-        dataDir(pkg),
-        "files/contentcache/Compulsory/android/gameassetbundles/config"
-    )
 
     private fun targets(pkg: String): List<File> {
-        val list = mutableListOf(filesDir(pkg))
-        val cfg = configDir(pkg)
-        if (cfg.exists()) list.add(cfg)
-        return list
+        val base = dataDir(pkg)
+        return listOf(
+            File(base, "files"),
+            File(base, "files/contentcache/Compulsory/android/gameassetbundles/config")
+        )
     }
 
     fun installedPackages(): List<String> = PACKAGES.filter { dataDir(it).exists() }
@@ -33,10 +27,19 @@ object Patcher {
         else true
     } catch (e: Exception) { false }
 
+    private fun ensureDir(dir: File): Boolean {
+        if (dir.isDirectory) return true
+        val parent = dir.parentFile
+        if (parent != null && !parent.isDirectory) ensureDir(parent)
+        if (dir.mkdirs()) return true
+        if (dir.mkdir()) return true
+        return dir.isDirectory
+    }
+
     fun apply(pkg: String, content: String): String {
         val report = StringBuilder()
         for (dir in targets(pkg)) {
-            if (!dir.exists() && !dir.mkdirs()) {
+            if (!ensureDir(dir)) {
                 report.appendLine("X No se pudo crear: ${dir.path}")
                 continue
             }
