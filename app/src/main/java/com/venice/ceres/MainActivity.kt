@@ -2,9 +2,7 @@ package com.venice.ceres
 
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -23,40 +21,42 @@ import androidx.compose.ui.unit.sp
 
 class MainActivity : ComponentActivity() {
 
-    private var hasAccess by mutableStateOf(false)
+    private var treeUri by mutableStateOf<Uri?>(null)
 
-    private val permLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { hasAccess = Patcher.hasAccess() }
+    private val picker = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            } catch (e: Exception) { }
+            Patcher.saveUri(this, uri)
+            treeUri = uri
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        hasAccess = Patcher.hasAccess()
+        treeUri = Patcher.loadUri(this)
 
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
-                ) { Screen(hasAccess) { permLauncher.launch(allFilesIntent()) } }
+                ) { Screen(treeUri) { picker.launch(null) } }
             }
         }
-    }
-
-    private fun allFilesIntent(): Intent {
-        val i = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
-            Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-        else Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-        return i.setData(Uri.parse("package:$packageName"))
     }
 }
 
 @Composable
-private fun Screen(hasAccess: Boolean, askPermission: () -> Unit) {
+private fun Screen(treeUri: Uri?, pickFolder: () -> Unit) {
     val ctx = LocalContext.current
     var features by remember { mutableStateOf(Config.allMax()) }
-    var packages by remember { mutableStateOf(Patcher.installedPackages()) }
-    var selected by remember { mutableStateOf(packages.firstOrNull()) }
     var log by remember { mutableStateOf("Listo.") }
 
     Column(
@@ -70,55 +70,37 @@ private fun Screen(hasAccess: Boolean, askPermission: () -> Unit) {
 
         HorizontalDivider()
 
-        if (!hasAccess) {
-            Card {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("PASO 1: dar permiso", fontWeight = FontWeight.Bold)
-                    Text("Necesita Acceso a todos los archivos para escribir en la carpeta de Free Fire.",
-                        fontSize = 13.sp)
-                    Button(onClick = askPermission) { Text("DAR PERMISO") }
-                }
-            }
-        } else {
-            Text("OK Permiso concedido", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
+        Text("PASO 1: elegir carpeta de Free Fire", fontWeight = FontWeight.Bold)
+        Text("Toca el boton. En la pantalla que sale navega a: Android > data > com.dts.freefireth  y toca USAR ESTA CARPETA.",
+            fontSize = 13.sp)
+        Button(onClick = pickFolder, modifier = Modifier.fillMaxWidth()) {
+            Text("ELEGIR CARPETA", fontWeight = FontWeight.Bold)
         }
+        Text(
+            if (treeUri == null) "Ninguna carpeta elegida aun"
+            else "Carpeta elegida correctamente",
+            fontSize = 13.sp,
+            color = if (treeUri == null) MaterialTheme.colorScheme.error
+            else MaterialTheme.colorScheme.primary
+        )
 
         HorizontalDivider()
 
-        Text("PASO 2: juego detectado", fontWeight = FontWeight.Bold)
-        if (packages.isEmpty()) {
-            Text("No encontre Free Fire. Abrelo una vez y vuelve.",
-                fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
-        } else {
-            packages.forEach { pkg ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(selected = selected == pkg, onClick = { selected = pkg })
-                    Text(if (pkg.endsWith("max")) "Free Fire MAX" else "Free Fire")
-                }
-            }
+        Text("PASO 2: todo al maximo", fontWeight = FontWeight.Bold)
+        Button(onClick = { features = Config.allMax() }, modifier = Modifier.fillMaxWidth()) {
+            Text("PONER TODO AL MAXIMO", fontWeight = FontWeight.Bold)
         }
-
-        HorizontalDivider()
-
-        Text("PASO 3: todo al maximo", fontWeight = FontWeight.Bold)
-        Button(
-            modifier = Modifier.fillMaxWidth(),
-            onClick = { features = Config.allMax() }
-        ) { Text("PONER TODO AL MAXIMO", fontWeight = FontWeight.Bold) }
 
         features.forEach { f ->
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(f.name, fontWeight = FontWeight.SemiBold)
-                    Text(f.desc, fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(f.desc, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Switch(
                     checked = f.enabled,
                     onCheckedChange = { v ->
-                        features = features.map {
-                            if (it.name == f.name) it.copy(enabled = v) else it
-                        }
+                        features = features.map { if (it.name == f.name) it.copy(enabled = v) else it }
                     }
                 )
             }
@@ -129,20 +111,19 @@ private fun Screen(hasAccess: Boolean, askPermission: () -> Unit) {
         Button(
             modifier = Modifier.fillMaxWidth(),
             onClick = {
-                val pkg = selected
-                if (pkg == null) Toast.makeText(ctx, "Elige un juego", Toast.LENGTH_SHORT).show()
-                else {
-                    log = Patcher.apply(pkg, Config.buildIni(features))
-                    Toast.makeText(ctx, "Aplicado. Reinicia Free Fire.", Toast.LENGTH_LONG).show()
+                val u = treeUri
+                if (u == null) {
+                    Toast.makeText(ctx, "Primero elige la carpeta", Toast.LENGTH_SHORT).show()
+                } else {
+                    log = Patcher.apply(ctx, u, Config.buildIni(features))
+                    Toast.makeText(ctx, "Aplicado", Toast.LENGTH_SHORT).show()
                 }
             }
-        ) { Text("APLICAR", fontWeight = FontWeight.Bold) }
+        ) { Text("APLICAR TODO", fontWeight = FontWeight.Bold) }
 
-        OutlinedButton(
-            modifier = Modifier.fillMaxWidth(),
-            onClick = { selected?.let { log = Patcher.restore(it) } }
-        ) { Text("RESTAURAR ORIGINAL") }
+        HorizontalDivider()
 
+        Text("Registro", fontWeight = FontWeight.Bold)
         Text(log, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
