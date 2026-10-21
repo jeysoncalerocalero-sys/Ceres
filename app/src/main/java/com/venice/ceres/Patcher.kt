@@ -1,67 +1,79 @@
 package com.venice.ceres
 
-import android.os.Build
-import android.os.Environment
-import java.io.File
+import android.content.Context
+import android.net.Uri
+import android.provider.DocumentsContract
+import androidx.documentfile.provider.DocumentFile
 
 object Patcher {
 
-    private val ROOT = Environment.getExternalStorageDirectory()
-    private val PACKAGES = listOf("com.dts.freefireth", "com.dts.freefiremax")
+    private const val FILE = "UserCustom.ini"
+    private const val BAK = "UserCustom.ini.bak"
+    private const val CFG = "contentcache/Compulsory/android/gameassetbundles/config"
 
-    fun dataDir(pkg: String) = File(ROOT, "Android/data/$pkg")
-
-    private fun targets(pkg: String): List<File> {
-        val base = dataDir(pkg)
-        return listOf(
-            File(base, "files"),
-            File(base, "files/contentcache/Compulsory/android/gameassetbundles/config")
-        )
+    fun saveUri(ctx: Context, uri: Uri) {
+        ctx.getSharedPreferences("ceres", Context.MODE_PRIVATE)
+            .edit().putString("tree", uri.toString()).apply()
     }
 
-    fun installedPackages(): List<String> = PACKAGES.filter { dataDir(it).exists() }
-
-    fun hasAccess(): Boolean = try {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
-            Environment.isExternalStorageManager()
-        else true
-    } catch (e: Exception) { false }
-
-    private fun ensureDir(dir: File): Boolean {
-        if (dir.isDirectory) return true
-        val parent = dir.parentFile
-        if (parent != null && !parent.isDirectory) ensureDir(parent)
-        if (dir.mkdirs()) return true
-        if (dir.mkdir()) return true
-        return dir.isDirectory
+    fun loadUri(ctx: Context): Uri? {
+        val s = ctx.getSharedPreferences("ceres", Context.MODE_PRIVATE)
+            .getString("tree", null) ?: return null
+        return runCatching { Uri.parse(s) }.getOrNull()
     }
 
-    fun apply(pkg: String, content: String): String {
-        val report = StringBuilder()
-        for (dir in targets(pkg)) {
-            if (!ensureDir(dir)) {
-                report.appendLine("X No se pudo crear: ${dir.path}")
-                continue
-            }
-            val target = File(dir, "UserCustom.ini")
-            val bak = File(dir, "UserCustom.ini.bak")
-            if (target.exists() && !bak.exists()) target.copyTo(bak, overwrite = true)
-            target.writeText(content)
-            report.appendLine("OK -> ${target.path}")
+    private fun childDir(parent: DocumentFile, path: String): DocumentFile? {
+        var cur: DocumentFile? = parent
+        for (part in path.split("/")) {
+            if (part.isBlank()) continue
+            val found = cur?.findFile(part)
+            cur = if (found != null && found.isDirectory) found else cur?.createDirectory(part)
+            if (cur == null) return null
         }
+        return cur
+    }
+
+    private fun write(ctx: Context, dir: DocumentFile, name: String, content: String): Boolean {
+        return try {
+            val existing = dir.findFile(name)
+            val uri = existing?.uri ?: DocumentsContract.createDocument(
+                ctx.contentResolver, dir.uri, "text/plain", name
+            )
+            if (uri == null) return false
+            ctx.contentResolver.openOutputStream(uri, "wt")?.use {
+                it.write(content.toByteArray())
+            }
+            true
+        } catch (e: Exception) { false }
+    }
+
+    fun apply(ctx: Context, treeUri: Uri, content: String): String {
+        val root = DocumentFile.fromTreeUri(ctx, treeUri)
+            ?: return "X No se pudo abrir la carpeta"
+
+        val files = childDir(root, "files")
+            ?: return "X No se pudo crear la carpeta files"
+
+        val original = files.findFile(FILE)
+        if (original != null && files.findFile(BAK) == null) {
+            runCatching {
+                val bytes = ctx.contentResolver.openInputStream(original.uri)?.use { it.readBytes() }
+                if (bytes != null) write(ctx, files, BAK, String(bytes))
+            }
+        }
+
+        val report = StringBuilder()
+        if (write(ctx, files, FILE, content)) {
+            report.appendLine("OK -> files/UserCustom.ini")
+        } else {
+            report.appendLine("X No se pudo escribir en files")
+        }
+
+        val cfg = childDir(files, CFG)
+        if (cfg != null && write(ctx, cfg, FILE, content)) {
+            report.appendLine("OK -> config/UserCustom.ini")
+        }
+
         return report.toString().ifBlank { "Nada que escribir" }
-    }
-
-    fun restore(pkg: String): String {
-        val report = StringBuilder()
-        for (dir in targets(pkg)) {
-            val bak = File(dir, "UserCustom.ini.bak")
-            val target = File(dir, "UserCustom.ini")
-            if (bak.exists()) {
-                bak.copyTo(target, overwrite = true)
-                report.appendLine("OK restaurado -> ${target.path}")
-            }
-        }
-        return report.toString().ifBlank { "No hay backup para restaurar" }
     }
 }
